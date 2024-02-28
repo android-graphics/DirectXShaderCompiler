@@ -52,15 +52,17 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake ../ -C ../cmake/caches/PredefinedParams.cmake -DCMAKE_BUILD_TYPE=Release
+          cmake ../ -C ../cmake/caches/PredefinedParams.cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_INCLUDE_TOOLS=OFF -DLLVM_BUILD_TOOLS=OFF -DLLVM_INCLUDE_UTILS=OFF -DLLVM_BUILD_RUNTIME=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_TESTS=OFF -DHLSL_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_DOCS=OFF 
           cmake --build . --config Release -j 12
+          ls
+          ls bin
 
       - name: Archive results
         if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/glslc/glslc ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/tools/clang/tools/dxc/dxc ${{ github.event.inputs.RELEASE_TAG }}
           tar -czvf ${{ github.event.inputs.RELEASE_TAG }}.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Archive results
@@ -68,15 +70,15 @@ jobs:
         shell: bash
         run: |
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/glslc/Release/glslc.exe ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/tools/clang/tools/dxc/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*
 
       - name: Archive results
-        if: runner.os == 'Darwin'
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/glslc/glslc ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/tools/clang/tools/dxc/dxc ${{ github.event.inputs.RELEASE_TAG }}
           tar -czvf ${{ github.event.inputs.RELEASE_TAG }}_macos.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Upload artifacts
@@ -98,7 +100,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
-        if: runner.os == 'Darwin'
+        if: runner.os == 'macOS'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.RELEASE_TAG }}

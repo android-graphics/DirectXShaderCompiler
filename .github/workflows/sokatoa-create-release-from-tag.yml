@@ -54,31 +54,32 @@ jobs:
           cd build
           cmake ../ -C ../cmake/caches/PredefinedParams.cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_INCLUDE_UTILS=OFF -DLLVM_BUILD_RUNTIME=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_TESTS=OFF -DHLSL_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_DOCS=OFF 
           cmake --build . --config Release -j 12
-          ls
-          ls bin
 
       - name: Archive results
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          ls build/bin/dxc
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/tools/clang/tools/dxc/dxc ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/bin/dxc ${{ github.event.inputs.RELEASE_TAG }}
           tar -czvf ${{ github.event.inputs.RELEASE_TAG }}.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Archive results
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          ls build/Release
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/tools/clang/tools/dxc/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*
 
       - name: Archive results
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          ls build/bin/dxc
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/tools/clang/tools/dxc/dxc ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/bin/dxc ${{ github.event.inputs.RELEASE_TAG }}
           tar -czvf ${{ github.event.inputs.RELEASE_TAG }}_macos.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Upload artifacts

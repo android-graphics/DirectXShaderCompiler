@@ -56,38 +56,28 @@ jobs:
           cmake --build . --config Release -j 12
 
       - name: Archive results
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          ls build/bin/dxc
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
           cp build/bin/dxc ${{ github.event.inputs.RELEASE_TAG }}
-          tar -czvf ${{ github.event.inputs.RELEASE_TAG }}.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
+          tar -czvf ${{ github.event.inputs.RELEASE_TAG }}_${{ runner.os }}.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Archive results
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ls build/Release
+          ls build/bin
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/bin/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*
 
-      - name: Archive results
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          ls build/bin/dxc
-          mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/bin/dxc ${{ github.event.inputs.RELEASE_TAG }}
-          tar -czvf ${{ github.event.inputs.RELEASE_TAG }}_macos.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
-
       - name: Upload artifacts
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.RELEASE_TAG }}
-          files: ${{ github.event.inputs.RELEASE_TAG }}.tar.gz
+          files: ${{ github.event.inputs.RELEASE_TAG }}_${{ runner.os }}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -97,14 +87,5 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.RELEASE_TAG }}
           files: ${{ github.event.inputs.RELEASE_TAG }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifacts
-        if: runner.os == 'macOS'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.RELEASE_TAG }}
-          files: ${{ github.event.inputs.RELEASE_TAG }}_macos.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

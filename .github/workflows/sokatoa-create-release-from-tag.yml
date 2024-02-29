@@ -38,7 +38,7 @@ jobs:
         os: [windows-2019, ubuntu-20.04, macos-12]
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -67,9 +67,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ls build/bin
+          ls build/Release/bin
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/bin/Release/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/Release/bin/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*
 
       - name: Upload artifacts

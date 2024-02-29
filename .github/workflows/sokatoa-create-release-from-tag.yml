@@ -67,7 +67,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          ls build/Release/bin
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
           cp build/Release/bin/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*

@@ -68,7 +68,8 @@ jobs:
         shell: bash
         run: |
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
-          cp build/Release/bin/dxc.exe ${{ github.event.inputs.RELEASE_TAG }}
+          # copy exe and dlls (all start with dx)
+          cp build/Release/bin/dx* ${{ github.event.inputs.RELEASE_TAG }}
           7z a -r ${{ github.event.inputs.RELEASE_TAG }}.zip ./${{ github.event.inputs.RELEASE_TAG }}/*
 
       - name: Upload artifacts

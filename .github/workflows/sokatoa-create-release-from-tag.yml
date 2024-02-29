@@ -61,6 +61,7 @@ jobs:
         run: |
           mkdir ${{ github.event.inputs.RELEASE_TAG }}
           cp build/bin/dxc ${{ github.event.inputs.RELEASE_TAG }}
+          cp build/bin/libdxcompiler.so ${{ github.event.inputs.RELEASE_TAG }}
           tar -czvf ${{ github.event.inputs.RELEASE_TAG }}_${{ runner.os }}.tar.gz -C ${{ github.event.inputs.RELEASE_TAG }} `ls -A ${{ github.event.inputs.RELEASE_TAG }}`
 
       - name: Archive results

@@ -57,7 +57,7 @@ public:
         typeConstantBinary(typesVec), takeNextIdFunction(takeNextIdFn),
         emittedConstantInts({}), emittedConstantFloats({}),
         emittedConstantComposites({}), emittedConstantNulls({}),
-        emittedConstantBools() {
+        emittedUndef({}), emittedConstantBools() {
     assert(decVec);
     assert(typesVec);
   }
@@ -78,7 +78,7 @@ public:
   uint32_t emitType(const SpirvType *);
 
   // Emits OpDecorate (or OpMemberDecorate if memberIndex is non-zero)
-  // targetting the given type. Uses the given decoration kind and its
+  // targeting the given type. Uses the given decoration kind and its
   // parameters.
   void emitDecoration(uint32_t typeResultId, spv::Decoration,
                       llvm::ArrayRef<uint32_t> decorationParams,
@@ -107,6 +107,7 @@ public:
   uint32_t getOrCreateConstantFloat(SpirvConstantFloat *);
   uint32_t getOrCreateConstantComposite(SpirvConstantComposite *);
   uint32_t getOrCreateConstantNull(SpirvConstantNull *);
+  uint32_t getOrCreateUndef(SpirvUndef *);
   uint32_t getOrCreateConstantBool(SpirvConstantBoolean *);
   template <typename vecType>
   void emitLiteral(const SpirvConstant *, vecType &outInst);
@@ -172,6 +173,7 @@ private:
       emittedConstantFloats;
   llvm::SmallVector<SpirvConstantComposite *, 8> emittedConstantComposites;
   llvm::SmallVector<SpirvConstantNull *, 8> emittedConstantNulls;
+  llvm::SmallVector<SpirvUndef *, 8> emittedUndef;
   SpirvConstantBoolean *emittedConstantBools[2];
   llvm::DenseSet<const SpirvInstruction *> emittedSpecConstantInstructions;
 
@@ -252,14 +254,13 @@ public:
   bool visit(SpirvConstantFloat *) override;
   bool visit(SpirvConstantComposite *) override;
   bool visit(SpirvConstantNull *) override;
+  bool visit(SpirvUndef *) override;
   bool visit(SpirvCompositeConstruct *) override;
   bool visit(SpirvCompositeExtract *) override;
   bool visit(SpirvCompositeInsert *) override;
   bool visit(SpirvExtInst *) override;
   bool visit(SpirvFunctionCall *) override;
-  bool visit(SpirvNonUniformBinaryOp *) override;
-  bool visit(SpirvNonUniformElect *) override;
-  bool visit(SpirvNonUniformUnaryOp *) override;
+  bool visit(SpirvGroupNonUniformOp *) override;
   bool visit(SpirvImageOp *) override;
   bool visit(SpirvImageQuery *) override;
   bool visit(SpirvImageSparseTexelsResident *) override;
@@ -296,6 +297,7 @@ public:
   bool visit(SpirvDebugExpression *) override;
   bool visit(SpirvDebugTypeBasic *) override;
   bool visit(SpirvDebugTypeVector *) override;
+  bool visit(SpirvDebugTypeMatrix *) override;
   bool visit(SpirvDebugTypeArray *) override;
   bool visit(SpirvDebugTypeFunction *) override;
   bool visit(SpirvDebugTypeComposite *) override;
@@ -396,6 +398,11 @@ private:
   void setFileOfSourceToDebugSourceId(uint32_t fileId, uint32_t dbg_src_id) {
     emittedSource[fileId] = dbg_src_id;
   }
+
+  // Emits an OpCooperativeMatrixLength instruction into the main binary
+  // section. It will replace the operand with the id of the type of the
+  // operand.
+  bool emitCooperativeMatrixLength(SpirvUnaryOp *inst);
 
 private:
   /// Emits error to the diagnostic engine associated with this visitor.

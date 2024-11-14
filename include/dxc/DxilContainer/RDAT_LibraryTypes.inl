@@ -72,7 +72,7 @@ RDAT_ENUM_START(DxilFeatureInfo1, uint32_t)
   RDAT_ENUM_VALUE(DerivativesInMeshAndAmpShaders, 0x1000000)
   RDAT_ENUM_VALUE(ResourceDescriptorHeapIndexing, 0x2000000)
   RDAT_ENUM_VALUE(SamplerDescriptorHeapIndexing, 0x4000000)
-  RDAT_ENUM_VALUE(WaveMMA, 0x8000000)
+  RDAT_ENUM_VALUE(Reserved, 0x8000000)
   RDAT_ENUM_VALUE(AtomicInt64OnHeapResource, 0x10000000)
   RDAT_ENUM_VALUE(AdvancedTextureOps, 0x20000000)
   RDAT_ENUM_VALUE(WriteableMSAATextures, 0x40000000)
@@ -265,6 +265,8 @@ RDAT_ENUM_START(NodeFuncAttribKind, uint32_t)
   RDAT_ENUM_VALUE(MaxRecursionDepth, 5)
   RDAT_ENUM_VALUE(LocalRootArgumentsTableIndex, 6)
   RDAT_ENUM_VALUE(MaxDispatchGrid, 7)
+  RDAT_ENUM_VALUE(Reserved_MeshNodePreview1, 8)
+  RDAT_ENUM_VALUE(Reserved_MeshNodePreview2, 9)
   RDAT_ENUM_VALUE_NODEF(LastValue)
 RDAT_ENUM_END()
 
@@ -277,6 +279,7 @@ RDAT_ENUM_START(NodeAttribKind, uint32_t)
   RDAT_ENUM_VALUE(RecordDispatchGrid, 5)
   RDAT_ENUM_VALUE(OutputArraySize, 6)
   RDAT_ENUM_VALUE(AllowSparseNodes, 7)
+  RDAT_ENUM_VALUE(RecordAlignmentInBytes, 8)
   RDAT_ENUM_VALUE_NODEF(LastValue)
 RDAT_ENUM_END()
 
@@ -306,9 +309,10 @@ RDAT_DXIL_ENUM_START(hlsl::DXIL::NodeLaunchType, uint32_t)
   RDAT_ENUM_VALUE_NODEF(Broadcasting)
   RDAT_ENUM_VALUE_NODEF(Coalescing)
   RDAT_ENUM_VALUE_NODEF(Thread)
+  RDAT_ENUM_VALUE_NODEF(Reserved_Mesh)
   RDAT_ENUM_VALUE_NODEF(LastEntry)
 #if DEF_RDAT_ENUMS == DEF_RDAT_DUMP_IMPL
-  static_assert((unsigned)hlsl::DXIL::NodeLaunchType::LastEntry == 4,
+  static_assert((unsigned)hlsl::DXIL::NodeLaunchType::LastEntry == 5,
                 "otherwise, RDAT_DXIL_ENUM definition needs updating");
 #endif
 RDAT_ENUM_END()
@@ -407,6 +411,10 @@ RDAT_STRUCT_TABLE(NodeShaderIOAttrib, NodeShaderIOAttribTable)
                     getAttribKind() ==
                         hlsl::RDAT::NodeAttribKind::AllowSparseNodes)
       RDAT_VALUE(uint32_t, AllowSparseNodes)
+    RDAT_UNION_ELIF(RecordAlignmentInBytes,
+                    getAttribKind() ==
+                        hlsl::RDAT::NodeAttribKind::RecordAlignmentInBytes)
+      RDAT_VALUE(uint32_t, RecordAlignmentInBytes)
     RDAT_UNION_ENDIF()
   RDAT_UNION_END()
 RDAT_STRUCT_END()

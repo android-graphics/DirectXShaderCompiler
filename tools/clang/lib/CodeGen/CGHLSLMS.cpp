@@ -43,7 +43,6 @@
 
 #include "dxc/DXIL/DxilCBuffer.h"
 #include "dxc/DXIL/DxilResourceProperties.h"
-#include "dxc/DXIL/DxilWaveMatrix.h"
 #include "dxc/DxilRootSignature/DxilRootSignature.h"
 #include "dxc/HLSL/DxilExportMap.h"
 #include "dxc/HLSL/DxilGenerationPass.h" // support pause/resume passes
@@ -214,7 +213,6 @@ private:
   unsigned AddTypeAnnotation(QualType Ty, DxilTypeSystem &dxilTypeSys,
                              unsigned &arrayEltSize);
   DxilResourceProperties BuildResourceProperty(QualType resTy);
-  DxilWaveMatrixProperties BuildWaveMatrixProperties(QualType resTy);
   void ConstructFieldAttributedAnnotation(DxilFieldAnnotation &fieldAnnotation,
                                           QualType fieldTy,
                                           bool bDefaultRowMajor);
@@ -394,7 +392,6 @@ CGMSHLSLRuntime::CGMSHLSLRuntime(CodeGenModule &CGM)
   HLOptions opts;
   opts.bIEEEStrict = CGM.getCodeGenOpts().UnsafeFPMath;
   opts.bDisableOptimizations = CGM.getCodeGenOpts().DisableLLVMOpts;
-  opts.bLegacyCBufferLoad = !CGM.getCodeGenOpts().HLSLNotUseLegacyCBufLoad;
   opts.bAllResourcesBound = CGM.getCodeGenOpts().HLSLAllResourcesBound;
   opts.bResMayAlias = CGM.getCodeGenOpts().HLSLResMayAlias;
   opts.PackingStrategy = CGM.getCodeGenOpts().HLSLSignaturePackingStrategy;
@@ -765,31 +762,8 @@ DxilResourceProperties CGMSHLSLRuntime::BuildResourceProperty(QualType resTy) {
   return RP;
 }
 
-DxilWaveMatrixProperties
-CGMSHLSLRuntime::BuildWaveMatrixProperties(QualType qualTy) {
-  DxilWaveMatrixProperties props;
-  llvm::Type *Ty = CGM.getTypes().ConvertType(qualTy);
-  if (dxilutil::IsHLSLWaveMatrixType(Ty, &props.kind)) {
-    const CXXRecordDecl *CXXRD =
-        qualTy.getCanonicalType()->getAsCXXRecordDecl();
-    if (const ClassTemplateSpecializationDecl *templateSpecializationDecl =
-            dyn_cast<ClassTemplateSpecializationDecl>(CXXRD)) {
-      const clang::TemplateArgumentList &args =
-          templateSpecializationDecl->getTemplateInstantiationArgs();
-      DXASSERT(args[0].getAsType()->isBuiltinType(),
-               "otherwise, wrong kind of component type");
-      const BuiltinType *BTy = args[0].getAsType()->getAs<BuiltinType>();
-      props.compType = BuiltinTyToCompTy(BTy, false, false);
-      props.dimM = (unsigned)args[1].getAsIntegral().getExtValue();
-      props.dimN = (unsigned)args[2].getAsIntegral().getExtValue();
-    }
-  }
-  return props;
-}
-
 bool CGMSHLSLRuntime::AddValToPropertyMap(Value *V, QualType Ty) {
-  return objectProperties.AddResource(V, BuildResourceProperty(Ty)) ||
-         objectProperties.AddWaveMatrix(V, BuildWaveMatrixProperties(Ty));
+  return objectProperties.AddResource(V, BuildResourceProperty(Ty));
 }
 
 void CGMSHLSLRuntime::ConstructFieldAttributedAnnotation(
@@ -2620,8 +2594,10 @@ void CGMSHLSLRuntime::AddHLSLNodeRecordTypeInfo(
         }
 
         // Ex: For DispatchNodeInputRecord<MY_RECORD>, set size =
-        // size(MY_RECORD)
+        // size(MY_RECORD), alignment = alignof(MY_RECORD)
         node.RecordType.size = CGM.getDataLayout().getTypeAllocSize(Type);
+        node.RecordType.alignment =
+            CGM.getDataLayout().getABITypeAlignment(Type);
         // Iterate over fields of the MY_RECORD(example) struct
         for (auto fieldDecl : RD->fields()) {
           // Check if any of the fields have a semantic annotation =

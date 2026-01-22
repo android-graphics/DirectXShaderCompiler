@@ -37,6 +37,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/Support/MD5.h"
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include <algorithm>
 #include <assert.h> // Needed for DxilPipelineStateValidation.h
@@ -797,6 +798,8 @@ public:
     PSVRuntimeInfo1 *pInfo1 = m_PSV.GetPSVRuntimeInfo1();
     PSVRuntimeInfo2 *pInfo2 = m_PSV.GetPSVRuntimeInfo2();
     PSVRuntimeInfo3 *pInfo3 = m_PSV.GetPSVRuntimeInfo3();
+    PSVRuntimeInfo4 *pInfo4 = m_PSV.GetPSVRuntimeInfo4();
+
     if (pInfo)
       hlsl::SetShaderProps(pInfo, m_Module);
     if (pInfo1)
@@ -805,6 +808,8 @@ public:
       hlsl::SetShaderProps(pInfo2, m_Module);
     if (pInfo3)
       pInfo3->EntryFunctionName = EntryFunctionName;
+    if (pInfo4)
+      hlsl::SetShaderProps(pInfo4, m_Module);
 
     // Set resource binding information
     UINT uResIndex = 0;
@@ -1056,6 +1061,9 @@ private:
       if (pRes->IsGloballyCoherent())
         info.Flags |=
             static_cast<uint32_t>(RDAT::DxilResourceFlag::UAVGloballyCoherent);
+      if (pRes->IsReorderCoherent())
+        info.Flags |=
+            static_cast<uint32_t>(RDAT::DxilResourceFlag::UAVReorderCoherent);
       if (pRes->IsROV())
         info.Flags |= static_cast<uint32_t>(
             RDAT::DxilResourceFlag::UAVRasterizerOrderedView);
@@ -1895,6 +1903,7 @@ void hlsl::SerializeDxilContainerForModule(
     DxilShaderHash *pShaderHashOut, AbstractMemoryStream *pReflectionStreamOut,
     AbstractMemoryStream *pRootSigStreamOut, void *pPrivateData,
     size_t PrivateDataSize) {
+  llvm::TimeTraceScope TimeScope("SerializeDxilContainer", StringRef(""));
   // TODO: add a flag to update the module and remove information that is not
   // part of DXIL proper and is used only to assemble the container.
 

@@ -16,6 +16,7 @@
 #include "dxc/Support/SPIRVOptions.h"
 #include "spirv/unified1/spirv.hpp11"
 #include "clang/AST/Attr.h"
+#include "clang/SPIRV/AstTypeProbe.h"
 #include "clang/SPIRV/FeatureManager.h"
 #include "clang/SPIRV/SpirvBuilder.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -33,7 +34,7 @@ class SpirvEmitter;
 
 class ResourceVar {
 public:
-  ResourceVar(SpirvVariable *var, const Decl *decl, SourceLocation loc,
+  ResourceVar(SpirvVariable *var, const NamedDecl *decl, SourceLocation loc,
               const hlsl::RegisterAssignment *r, const VKBindingAttr *b,
               const VKCounterBindingAttr *cb, bool counter = false,
               bool globalsBuffer = false)
@@ -52,9 +53,17 @@ public:
     return counterBinding;
   }
 
+  bool isResourceDescriptorHeap() const {
+    return spirv::isResourceDescriptorHeap(declaration);
+  }
+
+  bool isSamplerDescriptorHeap() const {
+    return spirv::isSamplerDescriptorHeap(declaration);
+  }
+
 private:
   SpirvVariable *variable;                    ///< The variable
-  const Decl *declaration;                    ///< The declaration
+  const NamedDecl *declaration;               ///< The declaration
   SourceLocation srcLoc;                      ///< Source location
   const hlsl::RegisterAssignment *reg;        ///< HLSL register assignment
   const VKBindingAttr *binding;               ///< Vulkan binding assignment
@@ -326,7 +335,7 @@ public:
   /// for the whole buffer. When we refer to the field VarDecl later, we need
   /// to do an extra OpAccessChain to get its pointer from the SPIR-V variable
   /// standing for the whole buffer.
-  SpirvVariable *createCTBuffer(const HLSLBufferDecl *decl);
+  void createCTBuffer(const HLSLBufferDecl *decl);
 
   /// \brief Creates a PushConstant block from the given decl.
   SpirvVariable *createPushConstant(const VarDecl *decl);
@@ -351,13 +360,14 @@ public:
   /// \brief Sets the entry function.
   void setEntryFunction(SpirvFunction *fn) { entryFunction = fn; }
 
-  /// \brief If the given decl is an implicit VarDecl that evaluates to a
-  /// constant, it evaluates the constant and registers the resulting SPIR-V
-  /// instruction in the astDecls map. Otherwise returns without doing anything.
+  /// \brief If the given decl is a VarDecl that evaluates to a constant, it
+  /// evaluates the constant and registers the resulting SPIR-V instruction in
+  /// the astDecls map. Otherwise returns without doing anything. The typical
+  /// cases are implicit VarDecls and global static constant variables.
   ///
   /// Note: There are many cases where the front-end might create such implicit
   /// VarDecls (such as some ray tracing enums).
-  void tryToCreateImplicitConstVar(const ValueDecl *);
+  bool tryToCreateConstantVar(const ValueDecl *);
 
   /// \brief Creates instructions to copy output stage variables defined by
   /// outputPatchDecl to hullMainOutputPatch that is a variable for the
@@ -557,6 +567,11 @@ public:
     auto *value = stageVarInstructions.lookup(decl);
     assert(value);
     return value;
+  }
+
+  SpirvVariable *getMSOutIndicesBuiltin() {
+    assert(msOutIndicesBuiltin && "Variable usage before decl parsing.");
+    return msOutIndicesBuiltin;
   }
 
   /// Decorate with spirv intrinsic attributes with lamda function variable
@@ -897,9 +912,9 @@ private:
   /// Creates all assoicated counter variables by recursively visiting decl's
   /// fields. Handles AssocCounter#3 and AssocCounter#4 (see the comment of
   /// CounterVarFields).
-  inline void createFieldCounterVars(const DeclaratorDecl *decl);
+  void createFieldCounterVars(const DeclaratorDecl *decl);
   void createFieldCounterVars(const DeclaratorDecl *rootDecl,
-                              const DeclaratorDecl *decl,
+                              const QualType type,
                               llvm::SmallVector<uint32_t, 4> *indices);
 
   /// Decorates varInstr of the given asType with proper interpolation modes
@@ -1014,6 +1029,25 @@ private:
   /// creating that stage variable, so that we don't need to query them again
   /// for reading and writing.
   llvm::DenseMap<const ValueDecl *, SpirvVariable *> stageVarInstructions;
+
+  /// Special case for the Indices builtin:
+  /// - this builtin has a different layout in HLSL & SPIR-V, meaning it
+  /// requires
+  ///   the same kind of handling as classic stageVarInstructions:
+  ///   -> load into a HLSL compatible tmp
+  ///   -> write back into the SPIR-V compatible layout.
+  /// - but the builtin is shared across invocations (not only lanes).
+  ///   -> we must only write/read from the indices requested by the user.
+  /// - the variable can be passed to other functions as a out param
+  ///   -> we cannot copy-in/copy-out because shared across invocations.
+  ///   -> we cannot pass a simple pointer: layout differences between
+  ///   HLSL/SPIR-V.
+  ///
+  /// All this means we must keep track of the builtin, and each assignment to
+  /// this will have to handle the layout differences. The easiest solution is
+  /// to keep this builtin global to the module if present.
+  SpirvVariable *msOutIndicesBuiltin = nullptr;
+
   /// Vector of all defined resource variables.
   llvm::SmallVector<ResourceVar, 8> resourceVars;
   /// Mapping from {RW|Append|Consume}StructuredBuffers to their
@@ -1161,11 +1195,6 @@ bool DeclResultIdMapper::isInputStorageClass(const StageVar &v) {
 
 void DeclResultIdMapper::createFnParamCounterVar(const VarDecl *param) {
   createCounterVarForDecl(param);
-}
-
-void DeclResultIdMapper::createFieldCounterVars(const DeclaratorDecl *decl) {
-  llvm::SmallVector<uint32_t, 4> indices;
-  createFieldCounterVars(decl, decl, &indices);
 }
 
 } // end namespace spirv

@@ -12,6 +12,7 @@
 
 #include "dxc/Support/WinIncludes.h"
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,10 +21,12 @@
 #include "dxc/DxilContainer/DxilContainerAssembler.h"
 #include "dxc/DxilContainer/DxilPipelineStateValidation.h"
 #include "dxc/DxilHash/DxilHash.h"
+#include "dxc/Support/Unicode.h" // for wstring conversions like WideToUtf8String
 #include "dxc/Support/WinIncludes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Regex.h"
+#include <wchar.h>
 
 #ifdef _WIN32
 #include <atlbase.h>
@@ -31,6 +34,7 @@
 #include "dxc/Support/FileIOHelper.h"
 #include "dxc/Support/Global.h"
 
+#include "dxc/DXIL/DxilShaderModel.h"
 #include "dxc/Test/DxcTestUtils.h"
 #include "dxc/Test/HlslTestUtils.h"
 
@@ -136,8 +140,6 @@ public:
   TEST_METHOD(IllegalSampleOffset4)
   TEST_METHOD(NoFunctionParam)
   TEST_METHOD(I8Type)
-  TEST_METHOD(EmptyStructInBuffer)
-  TEST_METHOD(BigStructInBuffer)
 
   // TODO: enable this.
   // TEST_METHOD(TGSMRaceCond)
@@ -205,6 +207,7 @@ public:
   TEST_METHOD(SimpleGs1Fail)
   TEST_METHOD(UavBarrierFail)
   TEST_METHOD(UndefValueFail)
+  TEST_METHOD(ValidationFailNoHash)
   TEST_METHOD(UpdateCounterFail)
   TEST_METHOD(LocalResCopy)
   TEST_METHOD(ResCounter)
@@ -300,6 +303,8 @@ public:
 
   TEST_METHOD(ValidateWithHash)
   TEST_METHOD(ValidateVersionNotAllowed)
+  TEST_METHOD(ValidatePreviewBypassHash)
+  TEST_METHOD(ValidateProgramVersionAgainstDxilModule)
   TEST_METHOD(CreateHandleNotAllowedSM66)
 
   TEST_METHOD(AtomicsConsts)
@@ -321,11 +326,12 @@ public:
   TEST_METHOD(PSVContentValidationCS)
   TEST_METHOD(PSVContentValidationMS)
   TEST_METHOD(PSVContentValidationAS)
+  TEST_METHOD(UnitTestExtValidationSupport)
   TEST_METHOD(WrongPSVSize)
   TEST_METHOD(WrongPSVSizeOnZeros)
   TEST_METHOD(WrongPSVVersion)
 
-  dxc::DxcDllSupport m_dllSupport;
+  dxc::DxCompilerDllLoader m_dllSupport;
   VersionSupportInfo m_ver;
 
   void TestCheck(LPCWSTR name) {
@@ -392,8 +398,8 @@ public:
 
     llvm::StringRef stage;
     unsigned RequiredDxilMajor = 1, RequiredDxilMinor = 0;
-    if (ParseTargetProfile(pShaderModel, stage, RequiredDxilMajor,
-                           RequiredDxilMinor)) {
+    if (hlsl::ShaderModel::ParseTargetProfile(
+            pShaderModel, stage, RequiredDxilMajor, RequiredDxilMinor)) {
       if (stage.compare("lib") == 0)
         pEntryName = L"";
       if (stage.compare("rootsig") != 0) {
@@ -537,18 +543,10 @@ public:
                             pLookFors, pReplacements, pErrorMsgs, bRegex);
   }
 
-  bool RewriteAssemblyToText(IDxcBlobEncoding *pSource, LPCSTR pShaderModel,
-                             LPCWSTR *pArguments, UINT32 argCount,
-                             const DxcDefine *pDefines, UINT32 defineCount,
-                             llvm::ArrayRef<LPCSTR> pLookFors,
-                             llvm::ArrayRef<LPCSTR> pReplacements,
-                             IDxcBlob **pBlob, bool bRegex = false) {
-    CComPtr<IDxcBlob> pProgram;
-    std::string disassembly;
-    if (!CompileSource(pSource, pShaderModel, pArguments, argCount, pDefines,
-                       defineCount, &pProgram))
-      return false;
-    DisassembleProgram(pProgram, &disassembly);
+  void PerformReplacementOnDisassembly(std::string disassembly,
+                                       llvm::ArrayRef<LPCSTR> pLookFors,
+                                       llvm::ArrayRef<LPCSTR> pReplacements,
+                                       IDxcBlob **pBlob, bool bRegex = false) {
     for (unsigned i = 0; i < pLookFors.size(); ++i) {
       LPCSTR pLookFor = pLookFors[i];
       bool bOptional = false;
@@ -605,6 +603,22 @@ public:
       }
     }
     Utf8ToBlob(m_dllSupport, disassembly.c_str(), pBlob);
+  }
+
+  bool RewriteAssemblyToText(IDxcBlobEncoding *pSource, LPCSTR pShaderModel,
+                             LPCWSTR *pArguments, UINT32 argCount,
+                             const DxcDefine *pDefines, UINT32 defineCount,
+                             llvm::ArrayRef<LPCSTR> pLookFors,
+                             llvm::ArrayRef<LPCSTR> pReplacements,
+                             IDxcBlob **pBlob, bool bRegex = false) {
+    CComPtr<IDxcBlob> pProgram;
+    std::string disassembly;
+    if (!CompileSource(pSource, pShaderModel, pArguments, argCount, pDefines,
+                       defineCount, &pProgram))
+      return false;
+    DisassembleProgram(pProgram, &disassembly);
+    PerformReplacementOnDisassembly(disassembly, pLookFors, pReplacements,
+                                    pBlob, bRegex);
     return true;
   }
 
@@ -1178,6 +1192,60 @@ TEST_F(ValidationTest, UavBarrierFail) {
 TEST_F(ValidationTest, UndefValueFail) {
   TestCheck(L"..\\CodeGenHLSL\\UndefValue.hlsl");
 }
+// verify that containers that are not valid DXIL do not
+// get assigned a hash.
+TEST_F(ValidationTest, ValidationFailNoHash) {
+  if (m_ver.SkipDxilVersion(1, 8))
+    return;
+  CComPtr<IDxcBlob> pProgram;
+
+  // We need any shader that will pass compilation but fail validation.
+  // This shader reads from uninitialized 'float a', which works for now.
+  LPCSTR pSource = R"(
+    float main(snorm float b : B) : SV_DEPTH
+    {
+        float a;
+        return b + a;
+    }
+)";
+
+  CComPtr<IDxcBlobEncoding> pSourceBlob;
+  Utf8ToBlob(m_dllSupport, pSource, &pSourceBlob);
+  std::vector<LPCWSTR> pArguments = {L"-Vd"};
+  LPCSTR pShaderModel = "ps_6_0";
+  bool result = CompileSource(pSourceBlob, pShaderModel, pArguments.data(), 1,
+                              nullptr, 0, &pProgram);
+
+  VERIFY_IS_TRUE(result);
+
+  CComPtr<IDxcValidator> pValidator;
+  CComPtr<IDxcOperationResult> pResult;
+  unsigned Flags = 0;
+  VERIFY_SUCCEEDED(
+      m_dllSupport.CreateInstance(CLSID_DxcValidator, &pValidator));
+
+  VERIFY_SUCCEEDED(pValidator->Validate(pProgram, Flags, &pResult));
+  HRESULT status;
+  VERIFY_IS_NOT_NULL(pResult);
+  CComPtr<IDxcBlob> pValidationOutput;
+  pResult->GetStatus(&status);
+
+  // expect validation to fail
+  VERIFY_FAILED(status);
+  pResult->GetResult(&pValidationOutput);
+  // Make sure the validation output is not null even when validation fails
+  VERIFY_SUCCEEDED(pValidationOutput != nullptr);
+
+  hlsl::DxilContainerHeader *pHeader = IsDxilContainerLike(
+      pProgram->GetBufferPointer(), pProgram->GetBufferSize());
+  VERIFY_IS_NOT_NULL(pHeader);
+
+  BYTE ZeroHash[DxilContainerHashSize] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                          0, 0, 0, 0, 0, 0, 0, 0};
+
+  // Should be equal, this proves the hash isn't written when validation fails
+  VERIFY_ARE_EQUAL(memcmp(ZeroHash, pHeader->Hash.Digest, sizeof(ZeroHash)), 0);
+}
 TEST_F(ValidationTest, UpdateCounterFail) {
   if (m_ver.SkipIRSensitiveTest())
     return;
@@ -1424,7 +1492,7 @@ TEST_F(ValidationTest, StructBufGlobalCoherentAndCounter) {
       L"..\\DXILValidation\\struct_buf1.hlsl", "ps_6_0",
       "!\"buf2\", i32 0, i32 0, i32 1, i32 12, i1 false, i1 false",
       "!\"buf2\", i32 0, i32 0, i32 1, i32 12, i1 true, i1 true",
-      "globallycoherent cannot be used with append/consume buffers: 'buf2'");
+      "globallycoherent cannot be used on buffer with counter 'buf2'");
 }
 
 TEST_F(ValidationTest, StructBufStrideAlign) {
@@ -1442,21 +1510,23 @@ TEST_F(ValidationTest, StructBufStrideOutOfBound) {
 }
 
 TEST_F(ValidationTest, StructBufLoadCoordinates) {
-  RewriteAssemblyCheckMsg(L"..\\DXILValidation\\struct_buf1.hlsl", "ps_6_0",
-                          "bufferLoad.f32(i32 68, %dx.types.Handle "
-                          "%buf1_texture_structbuf, i32 1, i32 8)",
-                          "bufferLoad.f32(i32 68, %dx.types.Handle "
-                          "%buf1_texture_structbuf, i32 1, i32 undef)",
-                          "structured buffer require 2 coordinates");
+  RewriteAssemblyCheckMsg(
+      L"..\\DXILValidation\\struct_buf1.hlsl", "ps_6_0",
+      "bufferLoad.f32(i32 68, %dx.types.Handle "
+      "%buf1_texture_structbuf, i32 1, i32 8)",
+      "bufferLoad.f32(i32 68, %dx.types.Handle "
+      "%buf1_texture_structbuf, i32 1, i32 undef)",
+      "structured buffer requires defined index and offset coordinates");
 }
 
 TEST_F(ValidationTest, StructBufStoreCoordinates) {
-  RewriteAssemblyCheckMsg(L"..\\DXILValidation\\struct_buf1.hlsl", "ps_6_0",
-                          "bufferStore.f32(i32 69, %dx.types.Handle "
-                          "%buf2_UAV_structbuf, i32 0, i32 0",
-                          "bufferStore.f32(i32 69, %dx.types.Handle "
-                          "%buf2_UAV_structbuf, i32 0, i32 undef",
-                          "structured buffer require 2 coordinates");
+  RewriteAssemblyCheckMsg(
+      L"..\\DXILValidation\\struct_buf1.hlsl", "ps_6_0",
+      "bufferStore.f32(i32 69, %dx.types.Handle "
+      "%buf2_UAV_structbuf, i32 0, i32 0",
+      "bufferStore.f32(i32 69, %dx.types.Handle "
+      "%buf2_UAV_structbuf, i32 0, i32 undef",
+      "structured buffer requires defined index and offset coordinates");
 }
 
 TEST_F(ValidationTest, TypedBufRetType) {
@@ -1742,14 +1812,6 @@ TEST_F(ValidationTest, I8Type) {
       "  %m8 = alloca i8",
       "I8 can only be used as immediate value for intrinsic",
       /*bRegex*/ true);
-}
-
-TEST_F(ValidationTest, EmptyStructInBuffer) {
-  TestCheck(L"..\\CodeGenHLSL\\EmptyStructInBuffer.hlsl");
-}
-
-TEST_F(ValidationTest, BigStructInBuffer) {
-  TestCheck(L"..\\CodeGenHLSL\\BigStructInBuffer.hlsl");
 }
 
 // TODO: enable this.
@@ -4114,7 +4176,7 @@ TEST_F(ValidationTest, ValidatePrintfNotAllowed) {
 }
 
 TEST_F(ValidationTest, ValidateWithHash) {
-  if (m_ver.SkipDxilVersion(1, 8))
+  if (m_ver.SkipDxilVersion(1, ShaderModel::kHighestReleasedMinor))
     return;
   CComPtr<IDxcBlob> pProgram;
   CompileSource("float4 main(float a:A, float b:B) : SV_Target { return 1; }",
@@ -4147,6 +4209,230 @@ TEST_F(ValidationTest, ValidateWithHash) {
   BYTE Result[DxilContainerHashSize];
   ComputeHashRetail(DataToHash, AmountToHash, Result);
   VERIFY_ARE_EQUAL(memcmp(Result, pHeader->Hash.Digest, sizeof(Result)), 0);
+}
+
+#ifdef _WIN32
+std::wstring GetEnvVarW(const std::wstring &VarName) {
+  if (const wchar_t *Result = _wgetenv(VarName.c_str()))
+    return std::wstring(Result);
+  return std::wstring();
+}
+
+void SetEnvVarW(const std::wstring &VarName, const std::wstring &VarValue) {
+  _wputenv_s(VarName.c_str(), VarValue.c_str());
+}
+
+// For now, 4 things are tested:
+// 1. The environment variable is not set. GetDxilDllPath() is empty and
+// DxilDllFailedToLoad() returns false
+// 2. Given a bogus path in the environment variable, and an initialized
+// DxcDllExtValidationSupport object, GetDxilDllPath()
+// retrieves the bogus path despite DxcDllExtValidationSupport failing to load
+// it as a dll, and DxilDllFailedToLoad() returns true.
+// 3. Given a valid path in the environment variable to a non-dll file,
+// and an initialized DxcDllExtValidationSupport object, GetDxilDllPath()
+// retrieves the valid path despite DxcDllExtValidationSupport failing to load
+// it as a dll, and DxilDllFailedToLoad() returns true.
+// 3. CLSID_DxcCompiler, CLSID_DxcLinker, CLSID_DxcValidator
+// may be created through DxcDllExtValidationSupport.
+// This is all to simply test that the new class, DxcDllExtValidationSupport,
+// works as intended.
+
+TEST_F(ValidationTest, UnitTestExtValidationSupport) {
+  dxc::DxcDllExtValidationLoader ExtSupportEmpty;
+  dxc::DxcDllExtValidationLoader ExtSupportBogus;
+  dxc::DxcDllExtValidationLoader ExtSupportValidNonDLLPath;
+
+  // capture any existing value in the environment variable,
+  // so that it can be restored after the test
+  std::wstring OldEnvVal = GetEnvVarW(L"DXC_DXIL_DLL_PATH");
+
+  // 1. with no env var set, test GetDxilDllPath() and DxilDllFailedToLoad()
+
+  // make sure the variable is cleared, in case other tests may have set it
+  SetEnvVarW(L"DXC_DXIL_DLL_PATH", L"");
+
+  // empty initialization should succeed
+  VERIFY_SUCCEEDED(ExtSupportEmpty.initialize());
+
+  VERIFY_IS_FALSE(ExtSupportEmpty.dxilDllFailedToLoad());
+  std::string EmptyPath = ExtSupportEmpty.getDxilDllPath();
+  VERIFY_ARE_EQUAL_STR(EmptyPath.c_str(), "");
+
+  // 2. Test with a bogus path in the environment variable
+  SetEnvVarW(L"DXC_DXIL_DLL_PATH", L"bogus");
+
+  if (!ExtSupportBogus.IsEnabled()) {
+    VERIFY_FAILED(ExtSupportBogus.initialize());
+    VERIFY_ARE_EQUAL(ExtSupportBogus.getFailureReason(),
+                     ExtSupportBogus.FailedDxilPath);
+  }
+
+  // validate that ExtSupportBogus was able to capture the environment
+  // variable's value, and that loading the bogus path was unsuccessful
+  std::string BogusPath = ExtSupportBogus.getDxilDllPath();
+  VERIFY_ARE_EQUAL_STR(BogusPath.c_str(), "bogus");
+  VERIFY_IS_TRUE(ExtSupportBogus.dxilDllFailedToLoad());
+
+  // 3. Test with a valid path to a file in the environment variable
+  std::filesystem::path p = hlsl_test::GetPathToHlslDataFile(L"lit.local.cfg");
+  SetEnvVarW(L"DXC_DXIL_DLL_PATH", p.wstring());
+
+  if (!ExtSupportValidNonDLLPath.IsEnabled()) {
+    VERIFY_FAILED(ExtSupportValidNonDLLPath.initialize());
+    VERIFY_ARE_EQUAL(ExtSupportValidNonDLLPath.getFailureReason(),
+                     ExtSupportValidNonDLLPath.FailedDxilLoad);
+  }
+
+  // validate that ExtSupportValidNonDLLPath was able to capture the environment
+  // variable's value, and that loading the valid non-dll path was unsuccessful
+  std::string ValidNonDLLPath = ExtSupportValidNonDLLPath.getDxilDllPath();
+  std::string FilePath;
+  Unicode::WideToUTF8String(
+      hlsl_test::GetPathToHlslDataFile(L"lit.local.cfg").c_str(), &FilePath);
+  VERIFY_ARE_EQUAL_STR(ValidNonDLLPath.c_str(), FilePath.c_str());
+  VERIFY_IS_TRUE(ExtSupportValidNonDLLPath.dxilDllFailedToLoad());
+
+  // 4. Test production of class IDs CLSID_DxcCompiler, CLSID_DxcLinker,
+  // and CLSID_DxcValidator through DxcDllExtValidationSupport.
+  CComPtr<IDxcCompiler> Compiler;
+  CComPtr<IDxcLinker> Linker;
+  CComPtr<IDxcValidator> Validator;
+
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance(
+      CLSID_DxcCompiler, __uuidof(IDxcCompiler), (IUnknown **)&Compiler));
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance(
+      CLSID_DxcLinker, __uuidof(IDxcLinker), (IUnknown **)&Linker));
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance(
+      CLSID_DxcValidator, __uuidof(IDxcValidator), (IUnknown **)&Validator));
+
+  Linker.Release();
+  Validator.Release();
+  Compiler.Release();
+
+  CComPtr<IMalloc> Malloc;
+  CComPtr<IDxcCompiler2> Compiler2;
+  VERIFY_SUCCEEDED(DxcCoGetMalloc(1, &Malloc));
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance2(Malloc, CLSID_DxcCompiler,
+                                                   __uuidof(IDxcCompiler),
+                                                   (IUnknown **)&Compiler2));
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance2(
+      Malloc, CLSID_DxcLinker, __uuidof(IDxcLinker), (IUnknown **)&Linker));
+  VERIFY_SUCCEEDED(ExtSupportBogus.CreateInstance2(Malloc, CLSID_DxcValidator,
+                                                   __uuidof(IDxcValidator),
+                                                   (IUnknown **)&Validator));
+
+  // reset the environment variable to its previous value,
+  // or the empty string if there was no previous value
+  SetEnvVarW(L"DXC_DXIL_DLL_PATH", OldEnvVal);
+}
+#endif
+
+TEST_F(ValidationTest, ValidatePreviewBypassHash) {
+  if (m_ver.SkipDxilVersion(1, ShaderModel::kHighestMinor))
+    return;
+  // If there is no available pre-release version to test, return
+  if (DXIL::CompareVersions(ShaderModel::kHighestMajor,
+                            ShaderModel::kHighestMinor,
+                            ShaderModel::kHighestReleasedMajor,
+                            ShaderModel::kHighestReleasedMinor) <= 0) {
+    return;
+  }
+
+  // Now test a pre-release version.
+  CComPtr<IDxcBlob> pProgram;
+  LPCSTR pSource =
+      R"(float4 main(float a:A, float b:B) : SV_Target { return 1; })";
+
+  CComPtr<IDxcBlobEncoding> pSourceBlob;
+  Utf8ToBlob(m_dllSupport, pSource, &pSourceBlob);
+
+  LPCSTR pShaderModel =
+      ShaderModel::Get(ShaderModel::Kind::Pixel, ShaderModel::kHighestMajor,
+                       ShaderModel::kHighestMinor)
+          ->GetName();
+
+  bool result = CompileSource(pSourceBlob, pShaderModel, nullptr, 0, nullptr, 0,
+                              &pProgram);
+  VERIFY_IS_TRUE(result);
+
+  hlsl::DxilContainerHeader *pHeader =
+      (hlsl::DxilContainerHeader *)pProgram->GetBufferPointer();
+
+  // Should be equal, this proves the hash is set to the preview bypass hash
+  // when a prerelease version is used
+  VERIFY_ARE_EQUAL(memcmp(&hlsl::PreviewByPassHash, pHeader->Hash.Digest,
+                          sizeof(hlsl::PreviewByPassHash)),
+                   0);
+}
+
+TEST_F(ValidationTest, ValidateProgramVersionAgainstDxilModule) {
+  if (m_ver.SkipDxilVersion(1, 8))
+    return;
+
+  CComPtr<IDxcBlob> pProgram;
+  LPCSTR pSource =
+      R"(float4 main(float a:A, float b:B) : SV_Target { return 1; })";
+
+  CComPtr<IDxcBlobEncoding> pSourceBlob;
+  Utf8ToBlob(m_dllSupport, pSource, &pSourceBlob);
+
+  LPCSTR pShaderModel =
+      ShaderModel::Get(ShaderModel::Kind::Pixel, 6, 0)->GetName();
+
+  bool result = CompileSource(pSourceBlob, pShaderModel, nullptr, 0, nullptr, 0,
+                              &pProgram);
+  VERIFY_IS_TRUE(result);
+
+  hlsl::DxilContainerHeader *pHeader =
+      (hlsl::DxilContainerHeader *)pProgram->GetBufferPointer();
+  // test that when the program version differs from the dxil module shader
+  // model version, the validator fails
+  DxilPartHeader *pPart = GetDxilPartByType(pHeader, DxilFourCC::DFCC_DXIL);
+
+  DxilProgramHeader *pMutableProgramHeader =
+      reinterpret_cast<DxilProgramHeader *>(GetDxilPartData(pPart));
+  int oldMajor = 0;
+  int oldMinor = 0;
+  int newMajor = 0;
+  int newMinor = 0;
+  VERIFY_IS_NOT_NULL(pMutableProgramHeader);
+  uint32_t &PV = pMutableProgramHeader->ProgramVersion;
+  oldMajor = (PV >> 4) & 0xF; // Extract the major version (next 4 bits)
+  oldMinor = PV & 0xF;        // Extract the minor version (lowest 4 bits)
+
+  // Add one to the last bit of the program version, which is 0, because
+  // the program version (shader model version) is 6.0, and we want to
+  // test that the validation fails when the program version is changed to 6.1
+  PV += 1;
+
+  newMajor = (PV >> 4) & 0xF; // Extract the major version (next 4 bits)
+  newMinor = PV & 0xF;        // Extract the new minor version (lowest 4 bits)
+
+  // now test that the validation fails
+  CComPtr<IDxcValidator> pValidator;
+  CComPtr<IDxcOperationResult> pResult;
+  unsigned Flags = 0;
+  VERIFY_SUCCEEDED(
+      m_dllSupport.CreateInstance(CLSID_DxcValidator, &pValidator));
+
+  HRESULT status;
+  VERIFY_SUCCEEDED(pValidator->Validate(pProgram, Flags, &pResult));
+  VERIFY_IS_NOT_NULL(pResult);
+  pResult->GetStatus(&status);
+
+  // expect validation to fail
+  VERIFY_FAILED(status);
+  // validation succeeded prior, so by inference we know that oldMajor /
+  // oldMinor were the old dxil module shader model versions
+  char buffer[100];
+  std::snprintf(buffer, sizeof(buffer),
+                "error: Program Version is %d.%d but Dxil Module shader model "
+                "version is %d.%d.\nValidation failed.\n",
+                newMajor, newMinor, oldMajor, oldMinor);
+  std::string formattedString = buffer;
+
+  CheckOperationResultMsgs(pResult, {buffer}, false, false);
 }
 
 TEST_F(ValidationTest, ValidateVersionNotAllowed) {
@@ -4630,9 +4916,9 @@ TEST_F(ValidationTest, PSVStringTableReorder) {
   const uint32_t *PSVPtr = (const uint32_t *)GetDxilPartData(pPSVPart);
 
   uint32_t PSVRuntimeInfo_size = *(PSVPtr++);
-  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo3), PSVRuntimeInfo_size);
-  PSVRuntimeInfo3 *PSVInfo =
-      const_cast<PSVRuntimeInfo3 *>((const PSVRuntimeInfo3 *)PSVPtr);
+  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo4), PSVRuntimeInfo_size);
+  PSVRuntimeInfo4 *PSVInfo =
+      const_cast<PSVRuntimeInfo4 *>((const PSVRuntimeInfo4 *)PSVPtr);
   VERIFY_ARE_EQUAL(2u, PSVInfo->SigInputElements);
   PSVPtr += PSVRuntimeInfo_size / 4;
   uint32_t ResourceCount = *(PSVPtr++);
@@ -4822,9 +5108,9 @@ TEST_F(ValidationTest, PSVSemanticIndexTableReorder) {
   const uint32_t *PSVPtr = (const uint32_t *)GetDxilPartData(pPSVPart);
 
   uint32_t PSVRuntimeInfo_size = *(PSVPtr++);
-  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo3), PSVRuntimeInfo_size);
-  PSVRuntimeInfo3 *PSVInfo =
-      const_cast<PSVRuntimeInfo3 *>((const PSVRuntimeInfo3 *)PSVPtr);
+  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo4), PSVRuntimeInfo_size);
+  PSVRuntimeInfo4 *PSVInfo =
+      const_cast<PSVRuntimeInfo4 *>((const PSVRuntimeInfo4 *)PSVPtr);
   VERIFY_ARE_EQUAL(PSVInfo->SigInputElements, 3u);
   VERIFY_ARE_EQUAL(PSVInfo->SigOutputElements, 3u);
   VERIFY_ARE_EQUAL(PSVInfo->SigPatchConstOrPrimElements, 2u);
@@ -5167,10 +5453,11 @@ SimplePSV::SimplePSV(const DxilPartHeader *pPSVPart) {
   const uint32_t *PSVPtrEnd = PSVPtr + PartSize / 4;
 
   uint32_t PSVRuntimeInfoSize = *(PSVPtr++);
-  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo3), PSVRuntimeInfoSize);
-  PSVRuntimeInfo3 *PSVInfo3 =
-      const_cast<PSVRuntimeInfo3 *>((const PSVRuntimeInfo3 *)PSVPtr);
-  PSVInfo = PSVInfo3;
+  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo4), PSVRuntimeInfoSize);
+  PSVRuntimeInfo4 *PSVInfo4 =
+      const_cast<PSVRuntimeInfo4 *>((const PSVRuntimeInfo4 *)PSVPtr);
+  PSVInfo = PSVInfo4;
+  PSVRuntimeInfo3 *PSVInfo3 = reinterpret_cast<PSVRuntimeInfo3 *>(PSVInfo4);
 
   PSVPtr += PSVRuntimeInfoSize / 4;
   uint32_t ResourceCount = *(PSVPtr++);
@@ -6273,9 +6560,9 @@ TEST_F(ValidationTest, WrongPSVSizeOnZeros) {
   const uint32_t *PSVPtr = (const uint32_t *)GetDxilPartData(pPSVPart);
 
   uint32_t PSVRuntimeInfo_size = *(PSVPtr++);
-  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo3), PSVRuntimeInfo_size);
-  PSVRuntimeInfo3 *PSVInfo =
-      const_cast<PSVRuntimeInfo3 *>((const PSVRuntimeInfo3 *)PSVPtr);
+  VERIFY_ARE_EQUAL(sizeof(PSVRuntimeInfo4), PSVRuntimeInfo_size);
+  PSVRuntimeInfo4 *PSVInfo =
+      const_cast<PSVRuntimeInfo4 *>((const PSVRuntimeInfo4 *)PSVPtr);
   VERIFY_ARE_EQUAL(2u, PSVInfo->SigInputElements);
   PSVPtr += PSVRuntimeInfo_size / 4;
   uint32_t *ResourceCountPtr = const_cast<uint32_t *>(PSVPtr++);
@@ -6507,7 +6794,7 @@ TEST_F(ValidationTest, WrongPSVVersion) {
   CheckOperationResultMsgs(
       p60WithPSV68Result,
       {"DXIL container mismatch for 'PSVRuntimeInfoSize' between 'PSV0' "
-       "part:('52') and DXIL module:('24')"},
+       "part:('56') and DXIL module:('24')"},
       /*maySucceedAnyway*/ false, /*bRegex*/ false);
 
   // Create a new Blob.
@@ -6525,6 +6812,6 @@ TEST_F(ValidationTest, WrongPSVVersion) {
   CheckOperationResultMsgs(
       p68WithPSV60Result,
       {"DXIL container mismatch for 'PSVRuntimeInfoSize' between 'PSV0' "
-       "part:('24') and DXIL module:('52')"},
+       "part:('24') and DXIL module:('56')"},
       /*maySucceedAnyway*/ false, /*bRegex*/ false);
 }
